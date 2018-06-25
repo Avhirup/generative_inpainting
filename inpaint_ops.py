@@ -117,7 +117,7 @@ def random_bbox(config):
     return (t, l, h, w)
 
 
-def bbox2mask(bbox, config, name='mask'):
+def bbox2mask(bbox, config, name='mask',is_whole=False):
     """Generate mask tensor from bbox.
 
     Args:
@@ -137,7 +137,10 @@ def bbox2mask(bbox, config, name='mask'):
              bbox[1]+w:bbox[1]+bbox[3]-w, :] = 1.
         return mask
     with tf.variable_scope(name), tf.device('/cpu:0'):
-        img_shape = config.IMG_SHAPES
+        if not is_whole:
+            img_shape = config.IMG_SHAPES
+        else:
+            img_shape = config.WHOLE_IMG_SHAPES
         height = img_shape[0]
         width = img_shape[1]
         mask = tf.py_func(

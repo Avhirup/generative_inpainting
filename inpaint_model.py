@@ -26,7 +26,7 @@ class InpaintCAModel(Model):
     def __init__(self):
         super().__init__('InpaintCAModel')
 
-    def build_inpaint_net(self, x, mask, config=None, reuse=False,
+    def build_inpaint_net(self, x,whole_x, mask,whole_mask, config=None, reuse=False,
                           training=True, padding='SAME', name='inpaint_net'):
         """Inpaint network.
 
@@ -87,18 +87,36 @@ class InpaintCAModel(Model):
             x = gen_conv(x, 4*cnum, 3, rate=16, name='xconv10_atrous')
             x_hallu = x
             # attention branch
-            x = gen_conv(xnow, cnum, 5, 1, name='pmconv1')
-            x = gen_conv(x, cnum, 3, 2, name='pmconv2_downsample')
-            x = gen_conv(x, 2*cnum, 3, 1, name='pmconv3')
-            x = gen_conv(x, 4*cnum, 3, 2, name='pmconv4_downsample')
-            x = gen_conv(x, 4*cnum, 3, 1, name='pmconv5')
-            x = gen_conv(x, 4*cnum, 3, 1, name='pmconv6',
+            x = gen_conv(xnow, cnum, 5, 1, name='lpmconv1')
+            x = gen_conv(x, cnum, 3, 2, name='lpmconv2_downsample')
+            x = gen_conv(x, 2*cnum, 3, 1, name='lpmconv3')
+            x = gen_conv(x, 4*cnum, 3, 2, name='lpmconv4_downsample')
+            x = gen_conv(x, 4*cnum, 3, 1, name='lpmconv5')
+            x = gen_conv(x, 4*cnum, 3, 1, name='lpmconv6',
                          activation=tf.nn.relu)
-            x, offset_flow = contextual_attention(x, x, mask_s, 3, 1, rate=2)
+            x_fg=x
+            x, local_offset_flow = contextual_attention(x, x, mask_s, 3, 1, rate=2)
             x = gen_conv(x, 4*cnum, 3, 1, name='pmconv9')
             x = gen_conv(x, 4*cnum, 3, 1, name='pmconv10')
             pm = x
-            x = tf.concat([x_hallu, pm], axis=3)
+            """-----------------------"""
+            #global context attention
+            whole_x = resize_mask_like(whole_x, xin)
+            whole_mask=resize_mask_like(whole_mask,xin)
+            wx = gen_conv(whole_x, cnum, 5, 1, name='lpmconv1')
+            wx = gen_conv(wx, cnum, 3, 2, name='lpmconv2_downsample')
+            wx = gen_conv(wx, 2*cnum, 3, 1, name='lpmconv3')
+            wx = gen_conv(wx, 4*cnum, 3, 2, name='lpmconv4_downsample')
+            wx = gen_conv(wx, 4*cnum, 3, 1, name='lpmconv5')
+            wx = gen_conv(wx, 4*cnum, 3, 1, name='lpmconv6',
+                         activation=tf.nn.relu)
+            x, global_offset_flow = contextual_attention(x_fg, wx, mask_s, 3, 1, rate=2)
+            x = gen_conv(x, 4*cnum, 3, 1, name='lpmconv9')
+            x = gen_conv(x, 4*cnum, 3, 1, name='lpmconv10')
+            lpm = x
+            """-----------------------"""
+
+            x = tf.concat([x_hallu, pm,lpm], axis=3)
 
             x = gen_conv(x, 4*cnum, 3, 1, name='allconv11')
             x = gen_conv(x, 4*cnum, 3, 1, name='allconv12')
@@ -143,13 +161,27 @@ class InpaintCAModel(Model):
 
     def build_graph_with_losses(self, batch_data, config, training=True,
                                 summary=False, reuse=False):
-        batch_pos = batch_data / 127.5 - 1.
+        # batch_posr = batch_data / 127.5 - 1.
+        batch_data = batch_data / 127.5 - 1.
         # generate mask, 1 represents masked point
+        #divide into 4 parts
+        """-------------------------"""
+        # image_patches=tf.extract_image_patches(batch_posr,[1,256,256,3],[1,1,1,1],[1,1,1,1])
+        image_patches=tf.extract_image_patches(batch_data,[1,256,256,3],[1,1,1,1],[1,1,1,1])
+        image_patches_reshaped=tf.reshape(image_patches,[-1,256,256,3])
+        #need to choose random
+        slice_index=t.random_uniform([1],0,3)
+        batch_posr=image_patches_reshaped[slice_index]
+        # surrounding_batch_posr=image_patches_reshaped[~slice_index]
+        """-------------------------"""
         bbox = random_bbox(config)
+        slice_adds={0:[0,0],1:[0:255],2:[255,0],3:[255,255]}
+        whole_bbox=[bbox[0]+slice_adds[slice_index][0],bbox[1]+slice_adds[slice_index][1],bbox[2],bbox[3]]
         mask = bbox2mask(bbox, config, name='mask_c')
-        batch_incomplete = batch_pos*(1.-mask)
+        whole_mask=bbox2mask(bbox, config, name='mask_w',is_whole=True)
+        batch_incomplete = batch_posr*(1.-mask)
         x1, x2, offset_flow = self.build_inpaint_net(
-            batch_incomplete, mask, config, reuse=reuse, training=training,
+            batch_incomplete,batch_data, mask,whole_mask, config, reuse=reuse, training=training,
             padding=config.PADDING)
         if config.PRETRAIN_COARSE_NETWORK:
             batch_predicted = x1
