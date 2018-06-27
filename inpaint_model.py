@@ -103,12 +103,12 @@ class InpaintCAModel(Model):
             #global context attention
             whole_x = resize_mask_like(whole_x, xin)
             whole_mask=resize_mask_like(whole_mask,xin)
-            wx = gen_conv(whole_x, cnum, 5, 1, name='lpmconv1')
-            wx = gen_conv(wx, cnum, 3, 2, name='lpmconv2_downsample')
-            wx = gen_conv(wx, 2*cnum, 3, 1, name='lpmconv3')
-            wx = gen_conv(wx, 4*cnum, 3, 2, name='lpmconv4_downsample')
-            wx = gen_conv(wx, 4*cnum, 3, 1, name='lpmconv5')
-            wx = gen_conv(wx, 4*cnum, 3, 1, name='lpmconv6',
+            wx = gen_conv(whole_x, cnum, 5, 1, name='gpmconv1')
+            wx = gen_conv(wx, cnum, 3, 2, name='gpmconv2_downsample')
+            wx = gen_conv(wx, 2*cnum, 3, 1, name='gpmconv3')
+            wx = gen_conv(wx, 4*cnum, 3, 2, name='gpmconv4_downsample')
+            wx = gen_conv(wx, 4*cnum, 3, 1, name='gpmconv5')
+            wx = gen_conv(wx, 4*cnum, 3, 1, name='gpmconv6',
                          activation=tf.nn.relu)
             x, global_offset_flow = contextual_attention(x_fg, wx, mask_s, 3, 1, rate=2)
             x = gen_conv(x, 4*cnum, 3, 1, name='lpmconv9')
@@ -126,7 +126,7 @@ class InpaintCAModel(Model):
             x = gen_conv(x, cnum//2, 3, 1, name='allconv16')
             x = gen_conv(x, 3, 3, 1, activation=None, name='allconv17')
             x_stage2 = tf.clip_by_value(x, -1., 1.)
-        return x_stage1, x_stage2, offset_flow
+        return x_stage1, x_stage2, local_offset_flow,global_offset_flow
 
     def build_wgan_local_discriminator(self, x, reuse=False, training=True):
         with tf.variable_scope('discriminator_local', reuse=reuse):
@@ -167,20 +167,23 @@ class InpaintCAModel(Model):
         #divide into 4 parts
         """-------------------------"""
         # image_patches=tf.extract_image_patches(batch_posr,[1,256,256,3],[1,1,1,1],[1,1,1,1])
-        image_patches=tf.extract_image_patches(batch_data,[1,256,256,3],[1,1,1,1],[1,1,1,1])
-        image_patches_reshaped=tf.reshape(image_patches,[-1,256,256,3])
         #need to choose random
-        slice_index=t.random_uniform([1],0,3)
-        batch_posr=image_patches_reshaped[slice_index]
+
+        x_crop=tf.random_uniform([],0,255,dtype=tf.int32)
+        y_crop=tf.random_uniform([],0,255,dtype=tf.int32)
+        height=tf.constant(256,dtype=tf.int32)
+        weight=tf.constant(256,dtype=tf.int32)
+        batch_data=tf.image.resize_image_with_crop_or_pad(batch_data,512,512)
+        batch_pos=tf.image.crop_to_bounding_box(batch_data,y_crop,x_crop,height,weight)
         # surrounding_batch_posr=image_patches_reshaped[~slice_index]
         """-------------------------"""
         bbox = random_bbox(config)
-        slice_adds={0:[0,0],1:[0:255],2:[255,0],3:[255,255]}
-        whole_bbox=[bbox[0]+slice_adds[slice_index][0],bbox[1]+slice_adds[slice_index][1],bbox[2],bbox[3]]
+        slice_adds={0:[tf.constant(0),tf.constant(0)],1:[tf.constant(0),tf.constant(255)],2:[tf.constant(255),tf.constant(0)],3:[tf.constant(255),tf.constant(255)]}
+        whole_bbox=[bbox[0]+x_crop,bbox[1]+y_crop,bbox[2],bbox[3]]
         mask = bbox2mask(bbox, config, name='mask_c')
-        whole_mask=bbox2mask(bbox, config, name='mask_w',is_whole=True)
-        batch_incomplete = batch_posr*(1.-mask)
-        x1, x2, offset_flow = self.build_inpaint_net(
+        whole_mask=bbox2mask(whole_bbox, config, name='mask_w',is_whole=True)
+        batch_incomplete = batch_pos*(1.-mask)
+        x1, x2, offset_flow,global_offset_flow = self.build_inpaint_net(
             batch_incomplete,batch_data, mask,whole_mask, config, reuse=reuse, training=training,
             padding=config.PADDING)
         if config.PRETRAIN_COARSE_NETWORK:
@@ -293,7 +296,7 @@ class InpaintCAModel(Model):
         edges = None
         batch_incomplete = batch_pos*(1.-mask)
         # inpaint
-        x1, x2, offset_flow = self.build_inpaint_net(
+        x1, x2, offset_flow,global_offset_flow = self.build_inpaint_net(
             batch_incomplete, mask, config, reuse=True,
             training=False, padding=config.PADDING)
         if config.PRETRAIN_COARSE_NETWORK:
@@ -310,6 +313,11 @@ class InpaintCAModel(Model):
             viz_img.append(
                 resize(offset_flow, scale=4,
                        func=tf.image.resize_nearest_neighbor))
+        if global_offset_flow is not None:
+            viz_img.append(
+                resize(global_offset_flow, scale=4,
+                       func=tf.image.resize_nearest_neighbor))
+
         images_summary(
             tf.concat(viz_img, axis=2),
             name+'_raw_incomplete_complete', config.VIZ_MAX_OUT)
@@ -334,7 +342,7 @@ class InpaintCAModel(Model):
         batch_pos = batch_raw / 127.5 - 1.
         batch_incomplete = batch_pos * (1. - masks)
         # inpaint
-        x1, x2, flow = self.build_inpaint_net(
+        x1, x2, flow,g_flow = self.build_inpaint_net(
             batch_incomplete, masks, reuse=reuse, training=is_training,
             config=None)
         batch_predict = x2
