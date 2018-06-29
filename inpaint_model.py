@@ -173,16 +173,17 @@ class InpaintCAModel(Model):
         y_crop=tf.random_uniform([],0,255,dtype=tf.int32)
         height=tf.constant(256,dtype=tf.int32)
         weight=tf.constant(256,dtype=tf.int32)
-        batch_data=tf.image.resize_image_with_crop_or_pad(batch_data,512,512)
+        # batch_data=tf.image.resize_image_with_crop_or_pad(batch_data,512,512)
+        batch_data=tf.image.resize_images(batch_data,[512,512],align_corners=True)
         batch_pos=tf.image.crop_to_bounding_box(batch_data,y_crop,x_crop,height,weight)
         # surrounding_batch_posr=image_patches_reshaped[~slice_index]
         """-------------------------"""
         bbox = random_bbox(config)
-        slice_adds={0:[tf.constant(0),tf.constant(0)],1:[tf.constant(0),tf.constant(255)],2:[tf.constant(255),tf.constant(0)],3:[tf.constant(255),tf.constant(255)]}
-        whole_bbox=[bbox[0]+x_crop,bbox[1]+y_crop,bbox[2],bbox[3]]
+        whole_bbox=[bbox[1]+x_crop,bbox[0]+y_crop,bbox[2],bbox[3]]
         mask = bbox2mask(bbox, config, name='mask_c')
         whole_mask=bbox2mask(whole_bbox, config, name='mask_w',is_whole=True)
         batch_incomplete = batch_pos*(1.-mask)
+        whole_batch_incomplete=batch_data*(1.-whole_mask)
         x1, x2, offset_flow,global_offset_flow = self.build_inpaint_net(
             batch_incomplete,batch_data, mask,whole_mask, config, reuse=reuse, training=training,
             padding=config.PADDING)
@@ -213,11 +214,17 @@ class InpaintCAModel(Model):
         if summary:
             scalar_summary('losses/l1_loss', losses['l1_loss'])
             scalar_summary('losses/ae_loss', losses['ae_loss'])
-            viz_img = [batch_pos, batch_incomplete, batch_complete]
+            batch_data_viz=tf.image.resize_images(batch_data,[256,256],align_corners=True)
+            whole_batch_incomplete_viz=tf.image.resize_images(whole_batch_incomplete,[256,256],align_corners=True)
+            viz_img = [batch_data_viz, whole_batch_incomplete_viz,batch_pos,batch_incomplete,batch_complete]
             if offset_flow is not None:
                 viz_img.append(
                     resize(offset_flow, scale=4,
                            func=tf.image.resize_nearest_neighbor))
+                viz_img.append(
+                    resize(global_offset_flow, scale=4,
+                           func=tf.image.resize_nearest_neighbor))
+
             images_summary(
                 tf.concat(viz_img, axis=2),
                 'raw_incomplete_predicted_complete', config.VIZ_MAX_OUT)
